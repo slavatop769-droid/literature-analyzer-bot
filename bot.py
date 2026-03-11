@@ -730,4 +730,8 @@ if __name__ == "__main__":
         print(f"   • 📚 Произведений: {work_requests}")
         print(f"   • 🎭 Персонажей: {character_requests}")
         print("=" * 80)
+<<<<<<< HEAD
         http_client.close()
+=======
+        http_client.close()
+>>>>>>> 2fd77917385016435233d21f7d5c462092a79435

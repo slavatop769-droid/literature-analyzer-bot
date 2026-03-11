@@ -11,6 +11,23 @@ from aiogram.fsm.state import State, StatesGroup
 from openai import OpenAI
 import httpx
 from datetime import datetime
+from flask import Flask
+import threading
+
+# Flask сервер для поддержания активности
+app = Flask(__name__)
+
+@app.route('/')
+@app.route('/health')
+def health():
+    return "Bot is running!", 200
+
+def run_flask():
+    app.run(host='0.0.0.0', port=8080)
+
+# Запускаем Flask в фоновом потоке
+flask_thread = threading.Thread(target=run_flask, daemon=True)
+flask_thread.start()
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, 

@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # ТОКЕНЫ
 # ============================================
 
-TELEGRAM_TOKEN = "8786705915:AAGP0p3RVuQF4IMKE_QbjfNicKXJNU7Qaw8"
+TELEGRAM_TOKEN = "8786705915:AAH3rvGi4RzuHI38V3foxJ7B2k0cJOtV5W4"
 OPENROUTER_API_KEY = "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"
 
 # Настройки OpenRouter

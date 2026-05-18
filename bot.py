@@ -589,7 +589,7 @@ async def cmd_about(message: Message):
     about_text = f"""
 🤖 О боте
 
-Версия: 10.3 (С подробным анализом)
+Версия: 1
 Моделей в списке: {len(available_models)}
 Таймаут: {HTTP_TIMEOUT}с
 

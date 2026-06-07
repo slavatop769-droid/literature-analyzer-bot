@@ -84,6 +84,23 @@ client = OpenAI(
     }
 )
 
+# Приоритетные модели (хорошо работают для литературного анализа)
+PRIORITY_MODELS = [
+    "qwen/qwen3-4b:free",
+    "mistralai/mistral-7b-instruct:free",
+    "meta-llama/llama-3.2-3b-instruct:free",
+    "microsoft/phi-3-mini-128k-instruct:free",
+    "google/gemini-2.0-flash-exp:free",
+]
+
+BLACKLIST_MODELS = [
+    "nvidia/nemotron-3.5-content-safety:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "poolside/laguna-xs.2:free",
+    "poolside/laguna-m.1:free",
+    "openai/gpt-oss-120b:free",
+    "openai/gpt-oss-20b:free",
+]
 # Инициализация бота
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
@@ -93,7 +110,7 @@ available_models = []
 current_model = None
 last_query = {}
 user_tasks = {}
-
+model_error_count = {}
 # Счетчик запросов для статистики
 total_requests = 0
 character_requests = 0
@@ -282,21 +299,29 @@ async def safe_send_message(message: Message, text: str):
 # ============================================
 
 async def fetch_available_models():
-    """Получает список доступных бесплатных моделей"""
     global available_models, current_model
-    
     try:
-        # Используем синхронный вызов в отдельном потоке
         response = await asyncio.to_thread(client.models.list)
-        
         free_models = []
         for model in response.data:
             if hasattr(model, 'id') and ':free' in model.id:
+                # Пропускаем модели из чёрного списка
+                if model.id in BLACKLIST_MODELS:
+                    continue
                 free_models.append(model.id)
         
         if free_models:
             available_models = free_models
-            current_model = free_models[0]
+            
+            # Выбираем первую приоритетную модель, которая есть в списке
+            current_model = None
+            for priority in PRIORITY_MODELS:
+                if priority in free_models:
+                    current_model = priority
+                    break
+            if not current_model and free_models:
+                current_model = free_models[0]
+            
             logger.info(f"✅ Найдено {len(free_models)} бесплатных моделей")
             return True, free_models
         else:
@@ -311,7 +336,6 @@ async def fetch_available_models():
         available_models = FALLBACK_MODELS
         current_model = FALLBACK_MODELS[0]
         return False, FALLBACK_MODELS
-
 async def analyze_with_openrouter(query, model=None, timeout=45.0):
     """Отправляет запрос к OpenRouter API для анализа произведения"""
     if model is None:

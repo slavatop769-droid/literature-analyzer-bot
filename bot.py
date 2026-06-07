@@ -891,9 +891,9 @@ async def analyze_literature(message: Message, state: FSMContext):
 # ============================================
 
 async def main():
-    await bot.delete_webhook(drop_pending_updates=True)
+    global current_model, available_models 
     
-    # Запускаем фоновую задачу очистки счётчиков ошибок
+    await bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(clean_error_logs_periodically())
     
     try:
@@ -922,8 +922,9 @@ async def main():
         if len(models) > 8:
             print(f"   ... и ещё {len(models) - 8}")
         
-        # Фильтруем рабочие модели
-        await filter_working_models()
+        
+        if available_models:
+            await filter_working_models()
         
         short_current = current_model.split('/')[-1].replace(':free', '') if current_model else "None"
         print(f"\n🤖 Текущая модель: {short_current}")
@@ -933,9 +934,9 @@ async def main():
         print("🔄 Использую запасной список")
         available_models = FALLBACK_MODELS
         current_model = FALLBACK_MODELS[0]
+        print(f"\n🤖 Текущая модель (запасная): {FALLBACK_MODELS[0].split('/')[-1].replace(':free', '')}")
     
     print("=" * 80)
-    
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

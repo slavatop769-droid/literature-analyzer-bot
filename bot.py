@@ -1,9 +1,8 @@
-import asyncio
+ import asyncio
 import logging
 import re
 import hashlib
 import json
-import random
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -50,7 +49,6 @@ OPENROUTER_TITLE = "Literature Analyzer Bot"
 # Настройки таймаутов
 HTTP_TIMEOUT = 60.0
 MAX_RETRIES = 2
-MAX_ERRORS = 3  # Максимальное количество ошибок перед удалением модели
 
 # Запасные модели на случай если API не вернет список
 FALLBACK_MODELS = [
@@ -95,7 +93,6 @@ available_models = []
 current_model = None
 last_query = {}
 user_tasks = {}
-model_error_count = {}  # Счетчик ошибок для каждой модели
 
 # Счетчик запросов для статистики
 total_requests = 0
@@ -147,101 +144,6 @@ CHARACTER_ANALYSIS_PROMPT = """Ты - эксперт по литературно
 
 ⚠️ ВАЖНО: Ответ должен быть подробным и содержательным. Используй эмодзи для разделения секций.
 """
-
-# ============================================
-# ФУНКЦИИ ДЛЯ ОТСЛЕЖИВАНИЯ НЕРАБОЧИХ МОДЕЛЕЙ
-# ============================================
-
-def mark_model_as_failed(model):
-    """Помечает модель как неудачную после нескольких ошибок"""
-    global available_models, current_model, model_error_count
-    
-    if model not in model_error_count:
-        model_error_count[model] = 0
-    
-    model_error_count[model] += 1
-    
-    # Если модель дала слишком много ошибок
-    if model_error_count[model] >= MAX_ERRORS:
-        if model in available_models:
-            logger.warning(f"🗑️ Удаляю нерабочую модель: {model}")
-            available_models.remove(model)
-            
-            # Если удалили текущую модель, выбираем новую
-            if current_model == model and available_models:
-                # Выбираем модель с наименьшим количеством ошибок
-                available_models.sort(key=lambda m: model_error_count.get(m, 0))
-                current_model = available_models[0]
-                logger.info(f"🔄 Выбрана новая модель: {current_model}")
-            elif not available_models:
-                # Если не осталось моделей, получаем заново
-                logger.warning("⚠️ Не осталось рабочих моделей, обновляю список")
-                asyncio.create_task(fetch_available_models())
-            return True
-    return False
-
-def reset_model_error_count(model):
-    """Сбрасывает счетчик ошибок для модели, если она успешно ответила"""
-    if model in model_error_count:
-        model_error_count[model] = max(0, model_error_count[model] - 1)
-
-def sort_models_by_reliability():
-    """Сортирует модели по надёжности (меньше ошибок - выше в списке)"""
-    global available_models
-    available_models.sort(key=lambda m: model_error_count.get(m, 0))
-
-# ============================================
-# ФУНКЦИЯ ДЛЯ ФИЛЬТРАЦИИ НЕДОСТУПНЫХ МОДЕЛЕЙ
-# ============================================
-
-async def filter_working_models():
-    """Проверяет модели и удаляет те, которые дают 401 ошибку"""
-    global available_models, current_model
-    
-    working_models = []
-    failed_models = []
-    
-    # Проверяем первые 15 моделей (чтобы не тратить много времени)
-    test_models = available_models[:15] if available_models else []
-    
-    print("\n🔍 Проверка доступности моделей...")
-    
-    for model in test_models:
-        try:
-            # Делаем минимальный тестовый запрос
-            completion = await asyncio.to_thread(
-                client.chat.completions.create,
-                model=model,
-                messages=[{"role": "user", "content": "Test"}],
-                max_tokens=5,
-                timeout=10.0
-            )
-            working_models.append(model)
-            short_name = model.split('/')[-1].replace(':free', '')
-            print(f"  ✅ {short_name} - доступна")
-        except Exception as e:
-            error_msg = str(e)
-            if "401" in error_msg or "User not found" in error_msg:
-                failed_models.append(model)
-                short_name = model.split('/')[-1].replace(':free', '')
-                print(f"  ❌ {short_name} - недоступна (401)")
-            else:
-                working_models.append(model)
-                short_name = model.split('/')[-1].replace(':free', '')
-                print(f"  ⚠️ {short_name} - доступна с предупреждением")
-    
-    if working_models:
-        # Обновляем список только рабочими моделями + остальными из списка
-        remaining_models = [m for m in available_models if m not in test_models]
-        available_models = working_models + remaining_models
-        
-        if current_model not in available_models:
-            current_model = available_models[0] if available_models else None
-        
-        print(f"\n🗑️ Удалено недоступных моделей: {len(failed_models)}")
-        print(f"✅ Осталось рабочих моделей: {len(available_models)}")
-    else:
-        print("\n⚠️ Не удалось найти рабочие модели, использую запасной список")
 
 # ============================================
 # ФУНКЦИЯ ДЛЯ ВЫВОДА В КОНСОЛЬ
@@ -381,9 +283,10 @@ async def safe_send_message(message: Message, text: str):
 
 async def fetch_available_models():
     """Получает список доступных бесплатных моделей"""
-    global available_models, current_model, model_error_count
+    global available_models, current_model
     
     try:
+        # Используем синхронный вызов в отдельном потоке
         response = await asyncio.to_thread(client.models.list)
         
         free_models = []
@@ -391,17 +294,9 @@ async def fetch_available_models():
             if hasattr(model, 'id') and ':free' in model.id:
                 free_models.append(model.id)
         
-        # Очищаем счетчики ошибок для моделей, которых больше нет
-        for old_model in list(model_error_count.keys()):
-            if old_model not in free_models:
-                del model_error_count[old_model]
-        
         if free_models:
             available_models = free_models
-            # Выбираем модель с наименьшим количеством ошибок
-            sort_models_by_reliability()
-            if current_model not in available_models:
-                current_model = available_models[0]
+            current_model = free_models[0]
             logger.info(f"✅ Найдено {len(free_models)} бесплатных моделей")
             return True, free_models
         else:
@@ -423,6 +318,7 @@ async def analyze_with_openrouter(query, model=None, timeout=45.0):
         model = current_model
     
     try:
+        # Используем asyncio.wait_for для жесткого контроля времени
         completion = await asyncio.wait_for(
             asyncio.to_thread(
                 client.chat.completions.create,
@@ -445,40 +341,15 @@ async def analyze_with_openrouter(query, model=None, timeout=45.0):
         analysis = completion.choices[0].message.content
         logger.info(f"✅ Успешный ответ от модели {model}")
         log_api_response(model, len(analysis), True)
-        
-        # Сброс счетчика ошибок для успешной модели
-        reset_model_error_count(model)
-        
         return analysis
         
+    except asyncio.TimeoutError:
+        log_error(f"Таймаут с моделью {model} ({timeout}с)")
+        return None
     except Exception as e:
-        error_msg = str(e)
-        log_error(f"Ошибка с моделью {model}: {error_msg}")
-        
-        # Проверяем тип ошибки
-        if "404" in error_msg or "Not Found" in error_msg:
-            # Модель не существует - сразу удаляем
-            if model in available_models:
-                logger.warning(f"🗑️ Модель {model} не существует, удаляю")
-                available_models.remove(model)
-                if not available_models:
-                    await fetch_available_models()
-                elif current_model == model and available_models:
-                    current_model = available_models[0]
-            return None
-        elif "401" in error_msg or "Unauthorized" in error_msg or "User not found" in error_msg:
-            # Модель недоступна для этого API ключа - удаляем её
-            if model in available_models:
-                logger.warning(f"🗑️ Модель {model} недоступна (401), удаляю из списка")
-                available_models.remove(model)
-                if current_model == model and available_models:
-                    current_model = available_models[0]
-            return None
-        else:
-            # Другие ошибки - помечаем модель как проблемную
-            if mark_model_as_failed(model):
-                return None
-            return None
+        log_error(str(e))
+        logger.error(f"❌ Ошибка с моделью {model}: {e}")
+        return None
 
 async def analyze_character(work, character, model=None, timeout=45.0):
     """Анализирует конкретного персонажа произведения"""
@@ -508,38 +379,15 @@ async def analyze_character(work, character, model=None, timeout=45.0):
         analysis = completion.choices[0].message.content
         logger.info(f"✅ Анализ персонажа {character}")
         log_api_response(model, len(analysis), True)
-        
-        # Сброс счетчика ошибок для успешной модели
-        reset_model_error_count(model)
-        
         return analysis
         
+    except asyncio.TimeoutError:
+        log_error(f"Таймаут при анализе персонажа {character} ({timeout}с)")
+        return None
     except Exception as e:
-        error_msg = str(e)
-        log_error(f"Ошибка при анализе персонажа {character} с моделью {model}: {error_msg}")
-        
-        if "404" in error_msg or "Not Found" in error_msg:
-            # Модель не существует - сразу удаляем
-            if model in available_models:
-                logger.warning(f"🗑️ Модель {model} не существует, удаляю")
-                available_models.remove(model)
-                if not available_models:
-                    await fetch_available_models()
-                elif current_model == model and available_models:
-                    current_model = available_models[0]
-            return None
-        elif "401" in error_msg or "Unauthorized" in error_msg or "User not found" in error_msg:
-            # Модель недоступна для этого API ключа - удаляем её
-            if model in available_models:
-                logger.warning(f"🗑️ Модель {model} недоступна (401), удаляю из списка")
-                available_models.remove(model)
-                if current_model == model and available_models:
-                    current_model = available_models[0]
-            return None
-        else:
-            # Другие ошибки - помечаем модель как проблемную
-            mark_model_as_failed(model)
-            return None
+        log_error(str(e))
+        logger.error(f"❌ Ошибка при анализе персонажа: {e}")
+        return None
 
 # ============================================
 # ОБРАБОТЧИКИ КОМАНД
@@ -559,7 +407,6 @@ async def cmd_start(message: Message):
 /character [имя] - анализ персонажа
 /models - список доступных моделей
 /model [номер] - выбрать модель
-/models_status - статус моделей (ошибки)
 /stats - статистика
 /help - справка
 
@@ -586,7 +433,6 @@ async def cmd_help(message: Message):
 /character [имя] - анализ персонажа
 /models - список моделей
 /model [номер] - выбрать модель
-/models_status - статус моделей (ошибки)
 /stats - статистика
 /about - информация
 """
@@ -596,7 +442,7 @@ async def cmd_help(message: Message):
 @dp.message(Command("stats"))
 async def cmd_stats(message: Message):
     """Показывает статистику запросов"""
-    global total_requests, work_requests, character_requests, current_model, available_models, model_error_count
+    global total_requests, work_requests, character_requests, current_model, available_models
     
     current_name = current_model.split('/')[-1].replace(':free', '') if current_model else 'не выбрана'
     
@@ -609,7 +455,6 @@ async def cmd_stats(message: Message):
 
 🤖 Текущая модель: {current_name}
 📋 Моделей в списке: {len(available_models)}
-🗑️ Удалено проблемных моделей: {len(model_error_count)}
 ⏱️ Таймаут: {HTTP_TIMEOUT}с
 """
     await message.reply(stats_text)
@@ -707,44 +552,6 @@ async def cmd_models(message: Message):
     
     log_user_request(message.from_user, "command", "/models")
 
-@dp.message(Command("models_status"))
-async def cmd_models_status(message: Message):
-    """Показывает статус всех моделей (количество ошибок)"""
-    global available_models, model_error_count, current_model
-    
-    if not available_models:
-        await message.reply("Список моделей пуст. Используйте /models для обновления.")
-        return
-    
-    status_text = "📊 **Статус моделей (по надёжности):**\n\n"
-    
-    # Сортируем по количеству ошибок
-    sorted_models = sorted(available_models, key=lambda m: model_error_count.get(m, 0))
-    
-    for model in sorted_models[:20]:
-        short_name = model.split('/')[-1].replace(':free', '')
-        errors = model_error_count.get(model, 0)
-        
-        if errors == 0:
-            status_emoji = "✅"
-        elif errors == 1:
-            status_emoji = "⚠️"
-        else:
-            status_emoji = "❌"
-        
-        is_current = " ⭐" if model == current_model else ""
-        status_text += f"{status_emoji} `{short_name}` — ошибок: {errors}{is_current}\n"
-    
-    if len(sorted_models) > 20:
-        status_text += f"\n... и ещё {len(sorted_models) - 20} моделей"
-    
-    status_text += f"\n\n📋 Всего моделей: {len(available_models)}"
-    status_text += f"\n🗑️ Удалено моделей за всё время: {len(model_error_count)}"
-    status_text += f"\n⚙️ Максимум ошибок до удаления: {MAX_ERRORS}"
-    
-    await message.reply(status_text, parse_mode="Markdown")
-    log_user_request(message.from_user, "command", "/models_status")
-
 @dp.message(Command("model"))
 async def cmd_model(message: Message):
     global current_model, available_models
@@ -765,6 +572,7 @@ async def cmd_model(message: Message):
     try:
         model_idx = int(args[1]) - 1
         if 0 <= model_idx < len(available_models):
+            old_model = current_model
             current_model = available_models[model_idx]
             model_name = current_model.split('/')[-1].replace(':free', '')
             await message.reply(f"✅ Модель изменена на: {model_name}")
@@ -784,18 +592,15 @@ async def cmd_about(message: Message):
 Версия: 1
 Моделей в списке: {len(available_models)}
 Таймаут: {HTTP_TIMEOUT}с
-Максимум ошибок до удаления: {MAX_ERRORS}
 
 Возможности:
 📚 Подробный анализ произведений (10+ предложений)
 🎭 Глубокий анализ персонажей (6 аспектов)
 🔄 Автоматическое получение моделей
-🗑️ Автоудаление нерабочих и недоступных моделей
 
 Команды:
 /character - анализ персонажа
 /models - список моделей
-/models_status - статус моделей
 /model [номер] - выбрать модель
 /stats - статистика
 
@@ -815,21 +620,6 @@ async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
     await message.reply("✅ Действие отменено")
     log_user_request(message.from_user, "command", "/cancel")
-
-# ============================================
-# ПЕРИОДИЧЕСКАЯ ОЧИСТКА ЛОГОВ ОШИБОК
-# ============================================
-
-async def clean_error_logs_periodically():
-    """Периодически сбрасывает счётчики ошибок для старых записей"""
-    while True:
-        await asyncio.sleep(3600)  # Каждый час
-        # Сбрасываем счётчики, но оставляем модели, которые всё ещё в списке
-        for model in list(model_error_count.keys()):
-            if model in available_models:
-                # Уменьшаем, а не обнуляем, чтобы не "забывать" проблемные модели
-                model_error_count[model] = max(0, model_error_count[model] - 1)
-        logger.info("🔄 Обновление счётчиков ошибок моделей завершено")
 
 # ============================================
 # ОСНОВНОЙ ОБРАБОТЧИК
@@ -891,10 +681,7 @@ async def analyze_literature(message: Message, state: FSMContext):
 # ============================================
 
 async def main():
-    global current_model, available_models 
-    
     await bot.delete_webhook(drop_pending_updates=True)
-    asyncio.create_task(clean_error_logs_periodically())
     
     try:
         bot_info = await bot.me()
@@ -908,13 +695,12 @@ async def main():
     print(f"🤖 Bot: @{bot_username}")
     print(f"🔑 OpenRouter Key: ✅ Есть")
     print(f"⏱️ Таймаут: {HTTP_TIMEOUT}с")
-    print(f"🗑️ Макс. ошибок до удаления: {MAX_ERRORS}")
     print("-" * 80)
     
     print("🔄 Получение списка бесплатных моделей...")
     success, models = await fetch_available_models()
     
-    if models and len(models) > 0:
+    if models:
         print(f"✅ Найдено {len(models)} бесплатных моделей:")
         for i, model in enumerate(models[:8], 1):
             short_name = model.split('/')[-1].replace(':free', '')
@@ -922,21 +708,15 @@ async def main():
         if len(models) > 8:
             print(f"   ... и ещё {len(models) - 8}")
         
-        
-        if available_models:
-            await filter_working_models()
-        
-        short_current = current_model.split('/')[-1].replace(':free', '') if current_model else "None"
+        short_current = current_model.split('/')[-1].replace(':free', '')
         print(f"\n🤖 Текущая модель: {short_current}")
-        print(f"\n📋 Режим: Подробный анализ с автоочисткой нерабочих моделей")
+        print(f"\n📋 Режим: Подробный анализ (старый промпт)")
     else:
         print("❌ Не удалось получить список моделей")
         print("🔄 Использую запасной список")
-        available_models = FALLBACK_MODELS
-        current_model = FALLBACK_MODELS[0]
-        print(f"\n🤖 Текущая модель (запасная): {FALLBACK_MODELS[0].split('/')[-1].replace(':free', '')}")
     
     print("=" * 80)
+    
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

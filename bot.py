@@ -716,7 +716,7 @@ async def cmd_about(message: Message):
     about_text = f"""
 🤖 О боте
 
-Версия: 2.0 (с автоочисткой нерабочих моделей)
+Версия: 1
 Моделей в списке: {len(available_models)}
 Таймаут: {HTTP_TIMEOUT}с
 Максимум ошибок до удаления: {MAX_ERRORS}
@@ -848,8 +848,7 @@ async def main():
     
     print("🔄 Получение списка бесплатных моделей...")
     success, models = await fetch_available_models()
-    
-        if models:
+  if models:
         print(f"✅ Найдено {len(models)} бесплатных моделей:")
         for i, model in enumerate(models[:8], 1):
             short_name = model.split('/')[-1].replace(':free', '')

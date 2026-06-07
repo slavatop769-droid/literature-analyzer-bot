@@ -859,7 +859,7 @@ async def analyze_literature(message: Message, state: FSMContext):
         status_msg = await message.reply("🔄 Анализирую... ⏱️ до 45 сек")
         
         # Пробуем текущую модель
-            analysis = await analyze_with_openrouter(query, current_model, timeout=60.0)
+        analysis = await analyze_with_openrouter(query, current_model, timeout=60.0)
         
         # Если не получилось, пробуем другие модели
         if not analysis and available_models:

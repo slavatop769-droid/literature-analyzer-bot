@@ -848,7 +848,8 @@ async def main():
     
     print("🔄 Получение списка бесплатных моделей...")
     success, models = await fetch_available_models()
-  if models:
+    
+    if models:
         print(f"✅ Найдено {len(models)} бесплатных моделей:")
         for i, model in enumerate(models[:8], 1):
             short_name = model.split('/')[-1].replace(':free', '')

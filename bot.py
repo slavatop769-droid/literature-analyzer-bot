@@ -191,6 +191,59 @@ def sort_models_by_reliability():
     available_models.sort(key=lambda m: model_error_count.get(m, 0))
 
 # ============================================
+# ФУНКЦИЯ ДЛЯ ФИЛЬТРАЦИИ НЕДОСТУПНЫХ МОДЕЛЕЙ
+# ============================================
+
+async def filter_working_models():
+    """Проверяет модели и удаляет те, которые дают 401 ошибку"""
+    global available_models, current_model
+    
+    working_models = []
+    failed_models = []
+    
+    # Проверяем первые 15 моделей (чтобы не тратить много времени)
+    test_models = available_models[:15] if available_models else []
+    
+    print("\n🔍 Проверка доступности моделей...")
+    
+    for model in test_models:
+        try:
+            # Делаем минимальный тестовый запрос
+            completion = await asyncio.to_thread(
+                client.chat.completions.create,
+                model=model,
+                messages=[{"role": "user", "content": "Test"}],
+                max_tokens=5,
+                timeout=10.0
+            )
+            working_models.append(model)
+            short_name = model.split('/')[-1].replace(':free', '')
+            print(f"  ✅ {short_name} - доступна")
+        except Exception as e:
+            error_msg = str(e)
+            if "401" in error_msg or "User not found" in error_msg:
+                failed_models.append(model)
+                short_name = model.split('/')[-1].replace(':free', '')
+                print(f"  ❌ {short_name} - недоступна (401)")
+            else:
+                working_models.append(model)
+                short_name = model.split('/')[-1].replace(':free', '')
+                print(f"  ⚠️ {short_name} - доступна с предупреждением")
+    
+    if working_models:
+        # Обновляем список только рабочими моделями + остальными из списка
+        remaining_models = [m for m in available_models if m not in test_models]
+        available_models = working_models + remaining_models
+        
+        if current_model not in available_models:
+            current_model = available_models[0] if available_models else None
+        
+        print(f"\n🗑️ Удалено недоступных моделей: {len(failed_models)}")
+        print(f"✅ Осталось рабочих моделей: {len(available_models)}")
+    else:
+        print("\n⚠️ Не удалось найти рабочие модели, использую запасной список")
+
+# ============================================
 # ФУНКЦИЯ ДЛЯ ВЫВОДА В КОНСОЛЬ
 # ============================================
 
@@ -413,9 +466,13 @@ async def analyze_with_openrouter(query, model=None, timeout=45.0):
                 elif current_model == model and available_models:
                     current_model = available_models[0]
             return None
-        elif "401" in error_msg or "Unauthorized" in error_msg:
-            # Проблема с API ключом, не удаляем модель
-            logger.error(f"🔑 Проблема с API ключом, проверьте OPENROUTER_API_KEY")
+        elif "401" in error_msg or "Unauthorized" in error_msg or "User not found" in error_msg:
+            # Модель недоступна для этого API ключа - удаляем её
+            if model in available_models:
+                logger.warning(f"🗑️ Модель {model} недоступна (401), удаляю из списка")
+                available_models.remove(model)
+                if current_model == model and available_models:
+                    current_model = available_models[0]
             return None
         else:
             # Другие ошибки - помечаем модель как проблемную
@@ -469,6 +526,14 @@ async def analyze_character(work, character, model=None, timeout=45.0):
                 if not available_models:
                     await fetch_available_models()
                 elif current_model == model and available_models:
+                    current_model = available_models[0]
+            return None
+        elif "401" in error_msg or "Unauthorized" in error_msg or "User not found" in error_msg:
+            # Модель недоступна для этого API ключа - удаляем её
+            if model in available_models:
+                logger.warning(f"🗑️ Модель {model} недоступна (401), удаляю из списка")
+                available_models.remove(model)
+                if current_model == model and available_models:
                     current_model = available_models[0]
             return None
         else:
@@ -725,7 +790,7 @@ async def cmd_about(message: Message):
 📚 Подробный анализ произведений (10+ предложений)
 🎭 Глубокий анализ персонажей (6 аспектов)
 🔄 Автоматическое получение моделей
-🗑️ Автоудаление нерабочих моделей
+🗑️ Автоудаление нерабочих и недоступных моделей
 
 Команды:
 /character - анализ персонажа
@@ -794,7 +859,7 @@ async def analyze_literature(message: Message, state: FSMContext):
         status_msg = await message.reply("🔄 Анализирую... ⏱️ до 45 сек")
         
         # Пробуем текущую модель
-        analysis = await analyze_with_openrouter(query, current_model, timeout=60.0)
+                analysis = await analyze_with_openrouter(query, current_model, timeout=60.0)
         
         # Если не получилось, пробуем другие модели
         if not analysis and available_models:
@@ -849,7 +914,7 @@ async def main():
     print("🔄 Получение списка бесплатных моделей...")
     success, models = await fetch_available_models()
     
-    if models:
+    if models and len(models) > 0:
         print(f"✅ Найдено {len(models)} бесплатных моделей:")
         for i, model in enumerate(models[:8], 1):
             short_name = model.split('/')[-1].replace(':free', '')
@@ -857,12 +922,17 @@ async def main():
         if len(models) > 8:
             print(f"   ... и ещё {len(models) - 8}")
         
-        short_current = current_model.split('/')[-1].replace(':free', '')
+        # Фильтруем рабочие модели
+        await filter_working_models()
+        
+        short_current = current_model.split('/')[-1].replace(':free', '') if current_model else "None"
         print(f"\n🤖 Текущая модель: {short_current}")
         print(f"\n📋 Режим: Подробный анализ с автоочисткой нерабочих моделей")
     else:
         print("❌ Не удалось получить список моделей")
         print("🔄 Использую запасной список")
+        available_models = FALLBACK_MODELS
+        current_model = FALLBACK_MODELS[0]
     
     print("=" * 80)
     
